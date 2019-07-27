@@ -13,15 +13,22 @@
 
 WiFiUDP P253_portUDP;
 
+// Custom settings for this plugin
+struct P253_SettingsStruct
+{
+  char Group[26]; // Group name that this node belongs to
+} P253_Settings;
+
+// We maintain a dedicated node list of all SmartNodeRules devices
 struct P253_NodeStruct
 {
   byte IP[4];
   byte age;
   String nodeName;
+  String group;
 } P253_Nodes[P253_UNIT_MAX];
 
 String P253_printWebString = "";
-
 
 boolean Plugin_253(byte function, struct EventStruct *event, String& string)
 {
@@ -128,6 +135,16 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
       {
         String command = parseString(string, 1);
 
+        if (command == F("config"))
+        {
+          String setting = P253_parseString(string,2,',');
+          String strP1 = P253_parseString(string,3,',');
+          if (setting.equalsIgnoreCase(F("Group"))){
+            strcpy(P253_Settings.Group, strP1.c_str());
+          }          
+          success = true;
+        }
+
         if (command == F("webrootredirect"))
         {
           success = true;
@@ -181,6 +198,8 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
               P253_Nodes[0].IP[x] = IP[x];
             P253_Nodes[0].age = 0;
             P253_Nodes[0].nodeName = Settings.Name;
+            P253_Nodes[0].group = P253_Settings.Group;
+
 
             // Get others to announce themselves so i can update my node list
             String msg = "MSGBUS/Refresh";
@@ -193,6 +212,8 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
           if (counter == 600) { // one minute
             String msg = F("MSGBUS/Hostname=");
             msg += Settings.Name;
+            msg += ",0.0.0.0,";
+            msg += P253_Settings.Group;
             P253_UDPSend(msg);
             P253_refreshNodeList();
             counter = 0;
@@ -200,10 +221,12 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
         }
         break;
       }
+      
     case PLUGIN_TEN_PER_SECOND:
       {
         break;
       }
+      
     case PLUGIN_ONCE_A_SECOND:
       {
         break;
@@ -278,8 +301,19 @@ void P253_MSGBusReceive() {
      msg = msg.substring(1); // Strip the '>' request token from the message
     }
 
-    if (msg.substring(0, 16) == F("MSGBUS/Hostname=")) {
-      P253_nodelist(remoteIP, msg.substring(16));
+    // Special MSGBus system events
+    if (msg.substring(0, 7) == F("MSGBUS/")) {
+      String sysMSG = msg.substring(7);
+      if (sysMSG.substring(0, 9) == F("Hostname=")) {
+        String params = sysMSG.substring(9);
+        String hostName = P253_parseString(params, 1,',');
+        //String ip = P253_parseString(params, 2,','); we just take the remote ip here
+        String group = P253_parseString(params, 3,',');
+        P253_nodelist(remoteIP, hostName, group);
+      }
+      if (sysMSG.substring(0, 7) == F("Refresh")) {
+//        MSGBusAnnounceMe();
+      }
     }
 
     // Create event for this message
@@ -324,11 +358,14 @@ void P253_UDPSend(String message)
 //********************************************************************************************
 //  Maintain node list
 //********************************************************************************************
-void P253_nodelist(IPAddress remoteIP, String msg) {
+void P253_nodelist(IPAddress remoteIP, String hostName, String group) {
 
   boolean found = false;
+  if(group.length()==0)
+    group = "-";
   for (byte x = 0; x < P253_UNIT_MAX; x++) {
-    if (P253_Nodes[x].nodeName == msg) {
+    if (P253_Nodes[x].nodeName == hostName) {
+      P253_Nodes[x].group = group;
       for (byte y = 0; y < 4; y++)
         P253_Nodes[x].IP[y] = remoteIP[y];
       P253_Nodes[x].age = 0;
@@ -339,7 +376,8 @@ void P253_nodelist(IPAddress remoteIP, String msg) {
   if (!found) {
     for (byte x = 0; x < P253_UNIT_MAX; x++) {
       if (P253_Nodes[x].IP[0] == 0) {
-        P253_Nodes[x].nodeName = msg;
+        P253_Nodes[x].nodeName = hostName;
+        P253_Nodes[x].group = group;
         for (byte y = 0; y < 4; y++)
           P253_Nodes[x].IP[y] = remoteIP[y];
         P253_Nodes[x].age = 0;
@@ -400,6 +438,11 @@ byte P253_sortedIndex[P253_UNIT_MAX + 1];
 void P253_handle_root() {
 
   String sCommand = WebServer.arg(F("cmd"));
+  String group = WebServer.arg("group");
+  boolean groupList = true;
+
+  if (group != "")
+    groupList = false;
   
   if (strcasecmp_P(sCommand.c_str(), PSTR("reboot")) != 0)
   {
@@ -424,28 +467,62 @@ void P253_handle_root() {
     // first get the list in alphabetic order
     for (byte x = 0; x < P253_UNIT_MAX; x++)
       P253_sortedIndex[x] = x;
-    P253_sortDeviceArray();
 
-    for (byte x = 0; x < P253_UNIT_MAX; x++)
-    {
-      byte index = P253_sortedIndex[x];
-      if (P253_Nodes[index].IP[0] != 0)
+    if (groupList == true) {
+      // Show Group list
+      P253_sortDeviceArrayGroup(); // sort on groupname
+      String prevGroup = "?";
+      for (byte x = 0; x < P253_UNIT_MAX; x++)
       {
-        String buttonclass ="";
-        if ((String)Settings.Name == P253_Nodes[index].nodeName)
-          buttonclass = F("button-nodelinkA");
-        else
-          buttonclass = F("button-nodelink");
-        reply += F("<TR><TD><a class=\"");
-        reply += buttonclass;
-        reply += F("\" ");
-        char url[40];
-        sprintf_P(url, PSTR("href='http://%u.%u.%u.%u'"), P253_Nodes[index].IP[0], P253_Nodes[index].IP[1], P253_Nodes[index].IP[2], P253_Nodes[index].IP[3]);
-        reply += url;
-        reply += ">";
-        reply += P253_Nodes[index].nodeName;
-        reply += F("</a>");
-        reply += F("<TD>");
+        byte index = P253_sortedIndex[x];
+        if (P253_Nodes[index].IP[0] != 0) {
+          String group = P253_Nodes[index].group;
+          if (group != prevGroup)
+          {
+            prevGroup = group;
+            reply += F("<TR><TD><a class=\"");
+            reply += F("button-nodelink");
+            reply += F("\" ");
+            reply += F("href='/?group=");
+            reply += group;
+            reply += "'>";
+            reply += group;
+            reply += F("</a>");
+            reply += F("<TD>");
+          }
+        }
+      }
+      // All nodes group button
+      reply += F("<TR><TD><a class=\"button-nodelink\" href='/?group=*'>_ALL_</a><TD>");
+    }
+    else {
+      // Show Node list
+      P253_sortDeviceArray();  // sort on nodename
+      for (byte x = 0; x < P253_UNIT_MAX; x++)
+      {
+        byte index = P253_sortedIndex[x];
+        if (P253_Nodes[index].IP[0] != 0 && (group == "*" || P253_Nodes[index].group == group))
+        {
+          String buttonclass ="";
+          if ((String)Settings.Name == P253_Nodes[index].nodeName)
+            buttonclass = F("button-nodelinkA");
+          else
+            buttonclass = F("button-nodelink");
+          reply += F("<TR><TD><a class=\"");
+          reply += buttonclass;
+          reply += F("\" ");
+          char url[40];
+          sprintf_P(url, PSTR("href='http://%u.%u.%u.%u"), P253_Nodes[index].IP[0], P253_Nodes[index].IP[1], P253_Nodes[index].IP[2], P253_Nodes[index].IP[3]);
+          reply += url;
+          if (group != "") {
+            reply += F("?group=");
+            reply += P253_Nodes[index].group;
+          }
+          reply += "'>";
+          reply += P253_Nodes[index].nodeName;
+          reply += F("</a>");
+          reply += F("<TD>");
+        }
       }
     }
     reply += "</table></form>";
@@ -521,6 +598,32 @@ void P253_sortDeviceArray()
     {
       one = P253_Nodes[P253_sortedIndex[innerLoop]].nodeName;
       two = P253_Nodes[P253_sortedIndex[innerLoop-1]].nodeName;
+      if (P253_arrayLessThan(one, two))
+      {
+        P253_switchArray(innerLoop);
+      }
+      innerLoop--;
+    }
+  }
+}
+
+
+//********************************************************************************
+// Device Sort routine, actual sorting
+//********************************************************************************
+void P253_sortDeviceArrayGroup()
+{
+  int innerLoop ;
+  int mainLoop ;
+  for ( mainLoop = 1; mainLoop < P253_UNIT_MAX; mainLoop++)
+  {
+    innerLoop = mainLoop;
+    while (innerLoop  >= 1)
+    {
+      String one = P253_Nodes[P253_sortedIndex[innerLoop]].group;
+      if(one.length()==0) one = "_";
+      String two = P253_Nodes[P253_sortedIndex[innerLoop - 1]].group;
+      if(two.length()==0) two = "_";
       if (P253_arrayLessThan(one, two))
       {
         P253_switchArray(innerLoop);
