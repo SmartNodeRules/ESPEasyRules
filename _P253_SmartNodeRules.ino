@@ -332,7 +332,8 @@ void P253_MSGBusReceive() {
 
         for (byte x = 0; x < PLUGIN_MAX; x++)
         {
-          if (Plugin_id[x] == Settings.TaskDeviceNumber[y])
+          if (validPluginID(DeviceIndex_to_Plugin_id[x]))          
+          //if (Plugin_id[x] == Settings.TaskDeviceNumber[y])
           {
             Plugin_ptr[x](PLUGIN_CUSTOM_CALL_253, &TempEvent, msg);
           }
@@ -658,4 +659,5 @@ String P253_parseString(String& string, byte indexFind, char separator)
   }
   return "";
 }
+
 
