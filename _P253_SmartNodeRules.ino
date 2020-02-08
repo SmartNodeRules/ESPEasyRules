@@ -2,6 +2,8 @@
 //#################################### Plugin 253: MSGBus ###############################################
 //#######################################################################################################
 
+#ifdef USES_P253
+
 #define PLUGIN_253
 #define PLUGIN_ID_253         253
 #define PLUGIN_NAME_253       "SmartNodeRules"
@@ -133,9 +135,9 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
 
     case PLUGIN_WRITE:
       {
-        String command = parseString(string, 1);
+        String command = P253_parseString(string, 1,',');
 
-        if (command == F("config"))
+        if (command == F("SmartNodeRulesConfig"))
         {
           String setting = P253_parseString(string,2,',');
           String strP1 = P253_parseString(string,3,',');
@@ -182,7 +184,7 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
         break;
       }
 
-    case PLUGIN_UNCONDITIONAL_POLL: // runs 10 per second
+    case PLUGIN_TEN_PER_SECOND:
       {
         if (wifiStatus != ESPEASY_WIFI_DISCONNECTED) {
 
@@ -210,20 +212,20 @@ boolean Plugin_253(byte function, struct EventStruct *event, String& string)
           P253_MSGBusReceive();
           counter++;
           if (counter == 600) { // one minute
+            char strIP[20];
+            IPAddress ip = WiFi.localIP();
+            sprintf_P(strIP, PSTR("%u.%u.%u.%u"), ip[0], ip[1], ip[2], ip[3]);
             String msg = F("MSGBUS/Hostname=");
             msg += Settings.Name;
-            msg += ",0.0.0.0,";
+            msg += ",";
+            msg += strIP;
+            msg += ",";
             msg += P253_Settings.Group;
             P253_UDPSend(msg);
             P253_refreshNodeList();
             counter = 0;
           }
         }
-        break;
-      }
-      
-    case PLUGIN_TEN_PER_SECOND:
-      {
         break;
       }
       
@@ -305,11 +307,33 @@ void P253_MSGBusReceive() {
     if (msg.substring(0, 7) == F("MSGBUS/")) {
       String sysMSG = msg.substring(7);
       if (sysMSG.substring(0, 9) == F("Hostname=")) {
-        String params = sysMSG.substring(9);
-        String hostName = P253_parseString(params, 1,',');
-        //String ip = P253_parseString(params, 2,','); we just take the remote ip here
-        String group = P253_parseString(params, 3,',');
-        P253_nodelist(remoteIP, hostName, group);
+        String parameters = sysMSG.substring(9);
+        String hostName = "";
+        String group = "";
+        String IP = "";
+        int jsonPos = parameters.indexOf("{");
+        if (jsonPos == -1)
+          {
+            hostName = P253_parseString(parameters, 1,',');
+            //IP = parseString(parameters, 2,','); we just take the remote ip here
+            group = P253_parseString(parameters, 3,',');
+            P253_nodelist(remoteIP, hostName, group);
+          }
+        else
+          {
+            hostName = P253_parseJSON(parameters, "Hostname");
+            hostName.replace("\"","");
+            group = P253_parseJSON(parameters, "Groupname");
+            group.replace("\"","");
+            IP = P253_parseJSON(parameters, "IP");
+            IP.replace("\"","");
+            char tmpString[26];
+            byte IPaddress[4];
+            IP.toCharArray(tmpString, 26);
+            str2ip(tmpString, IPaddress);
+            IPAddress remoteHostIP = IPaddress;
+            P253_nodelist(remoteHostIP, hostName, group);
+          }
       }
       if (sysMSG.substring(0, 7) == F("Refresh")) {
 //        MSGBusAnnounceMe();
@@ -660,4 +684,29 @@ String P253_parseString(String& string, byte indexFind, char separator)
   return "";
 }
 
+//********************************************************************************************
+// Parse a value from a json formatted string (supports only single object)
+//********************************************************************************************
+String P253_parseJSON(String json, String name){
+  name = "\"" + name + "\"";
+  int valuePos = json.indexOf(name);
+  if (valuePos != -1){
+    String valueString = json.substring(valuePos);
+    int colonPos = valueString.indexOf(":");
+    if (colonPos != -1){
+      valueString = valueString.substring(colonPos + 1);
+      int endPos = valueString.indexOf(",");
+      if (endPos == -1)
+        endPos = valueString.indexOf("}");
+      if (endPos != -1){
+        valueString = valueString.substring(0, endPos);
+        valueString.trim();
+        return valueString;
+      }
+    }
+  }
+  return "";
+}
+
+#endif
 
